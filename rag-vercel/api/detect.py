@@ -1,12 +1,12 @@
-# api/detect.py
 from flask import Flask, request, jsonify
+import os
 import requests
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
 # ----------------- DeepSeek Config -----------------
-API_URL = "https://api-ap-southeast-1.modelarts-maas.com/v1/chat/completions"  # <-- update if your model is in another region
-API_KEY = "4_JENf9g9NVi7_332loZt65qIydiAJCPNHhbx0irqaHtJPkfqcUCpp8tp85SlqOU8QX1lYp4AsvLtKqgx0OXRQ"
+API_URL = "https://api-ap-southeast-1.modelarts-maas.com/v1/chat/completions"
+API_KEY = os.environ.get("DEEPSEEK_API_KEY")  # use Vercel environment variable
 
 headers = {
     "Content-Type": "application/json",
@@ -29,14 +29,10 @@ def deepseek_chat(prompt, system_prompt=None, max_tokens=512, temperature=0.3):
     try:
         response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        return {"error": "Request failed", "details": str(e)}
-
-    data = response.json()
-    try:
+        data = response.json()
         return {"answer": data["choices"][0]["message"]["content"].strip()}
-    except (KeyError, IndexError):
-        return {"error": "Invalid response format", "details": data}
+    except requests.exceptions.RequestException as e:
+        return {"error": "DeepSeek API request failed", "details": str(e)}
 
 # ----------------- Symptoms -----------------
 SYMPTOMS = [
@@ -66,21 +62,16 @@ SYMPTOMS = [
 # ----------------- Embeddings -----------------
 model = SentenceTransformer('sentence-transformers/distiluse-base-multilingual-cased-v2')
 symptom_texts = [s["text"] for s in SYMPTOMS]
-symptom_embeddings = model.encode(symptom_texts, convert_to_numpy=True)
+symptom_embeddings = model.encode(symptom_texts)
 
 def detect_symptoms_embedding(user_text, top_k=3):
-    user_embedding = model.encode([user_text], convert_to_numpy=True)[0]
-
+    user_embedding = model.encode([user_text])[0]
     def cosine_sim(a, b):
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
     similarities = [cosine_sim(user_embedding, emb) for emb in symptom_embeddings]
     top_indices = np.argsort(similarities)[::-1][:top_k]
-
-    return [
-        {"key": SYMPTOMS[i]["key"], "text": SYMPTOMS[i]["text"], "similarity": float(similarities[i])}
-        for i in top_indices
-    ]
+    detected = [{"key": SYMPTOMS[i]["key"], "text": SYMPTOMS[i]["text"], "similarity": float(similarities[i])} for i in top_indices]
+    return detected
 
 # ----------------- Flask App -----------------
 app = Flask(__name__)
@@ -93,13 +84,13 @@ def detect():
 
     user_text = data["text"]
     detected_symptoms = detect_symptoms_embedding(user_text)
-    deepl_answer = deepseek_chat(user_text)
+    deepseek_answer = deepseek_chat(user_text)
 
     return jsonify({
         "input": user_text,
         "detected_symptoms": detected_symptoms,
-        "deepseek_answer": deepl_answer
+        "deepseek_answer": deepseek_answer
     })
 
-if __name__ == "__main__":
-    app.run(debug=True)
+# ----------------- Vercel Entry Point -----------------
+# Vercel automatically looks for `app` object in the file.
